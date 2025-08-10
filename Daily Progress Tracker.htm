@@ -1,0 +1,1199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Daily Goal Tracker — Single-File App</title>
+<!--
+Daily Goal Tracker (Single-File Web App)
+Author: ChatGPT (Senior Front-End Eng. role)
+License: MIT (do whatever; attribution appreciated)
+
+WHAT THIS DOES
+• Manage tasks (add/edit/delete, reorder, toggle Daily vs Optional).
+• Check off tasks per day (Today view + date picker for any past day).
+• One-tap “Mark all done” and “Clear day”.
+• Progress visuals:
+  - 90-day calendar heatmap (0–100% completion color scale, tooltip).
+  - 30-day Chart.js line (or bar) of % completion by day.
+• Metrics & ranking: today %, rolling 7-day avg, calendar-month avg, longest & current 100% streaks.
+• Ranks: A (90–100), B (75–89), C (50–74), D (25–49), F (<25) — shown for Today, This Week, This Month.
+• Filters: show All / Complete / Incomplete for the selected day.
+• Data controls: Export JSON, Import JSON (merge/replace, validated), Reset (double confirm).
+• QoL: 1-step Undo, toast notifications, remembers last tab/date, keyboard shortcuts:
+    N = new task,  T = jump to Today,  C = clear selected day.
+• Accessible: semantic HTML, labels, focus states, keyboard nav, ARIA live regions.
+• Mobile-first, responsive, light/dark mode toggle (persisted).
+
+TECH
+• Vanilla HTML/CSS/JS in one file. No frameworks.
+• Data persisted to localStorage under key "dgt:v1".
+• Chart via CDN (Chart.js v4).
+• Lightweight heatmap = simple 7x~13 grid (no heavy libs).
+• Runs locally by opening this file in a browser. No build step.
+
+NOTES
+• “Daily” tasks count toward completion %. “Optional” tasks are tracked but excluded from the %.
+• Undo covers the last mutating action (add/edit/delete/reorder/complete/import/reset…).
+• Seed data is created on first load so visuals aren’t empty.
+
+ACCEPTANCE TEST HINTS
+• Add 3 tasks, mark all done today → header shows 100% and Rank A.
+• Navigate to yesterday, mark partial → heatmap + chart update.
+• Export → Reset → Import (Replace or Merge) → data restored.
+• Reorder tasks → reload → order persists.
+• Heatmap intensity darkens as completion % rises.
+
+Enjoy!
+-->
+<style>
+  :root {
+    /* Color tokens (light theme) */
+    --bg: #0f1115;
+    --panel: #151924;
+    --muted: #8a94a7;
+    --text: #e8ecf2;
+    --accent: #7aa2ff;
+    --accent-2: #22c55e;
+    --danger: #ef4444;
+    --warn: #f59e0b;
+    --ok: #10b981;
+    --border: #222838;
+
+    /* Heatmap gradient (light -> dark as % rises) */
+    --hmp0: #1f2635;
+    --hmp1: #23314f;
+    --hmp2: #214a7a;
+    --hmp3: #1d6aa3;
+    --hmp4: #1582cf;
+    --hmp5: #0a99ff;
+
+    /* Rank badges */
+    --rankA: #22c55e;
+    --rankB: #84cc16;
+    --rankC: #f59e0b;
+    --rankD: #f97316;
+    --rankF: #ef4444;
+
+    --radius: 12px;
+    --radius-sm: 8px;
+    --shadow: 0 10px 30px rgba(0,0,0,.25);
+
+    --focus: 0 0 0 3px rgba(122,162,255,.35);
+  }
+  [data-theme="light"]{
+    --bg: #f6f7fb;
+    --panel: #ffffff;
+    --text: #0f172a;
+    --muted: #475569;
+    --accent: #3b82f6;
+    --accent-2: #16a34a;
+    --danger: #dc2626;
+    --warn: #d97706;
+    --ok: #059669;
+    --border: #e5e7eb;
+
+    --hmp0: #eaeef7;
+    --hmp1: #cfe1ff;
+    --hmp2: #a7cdfd;
+    --hmp3: #7ab4fb;
+    --hmp4: #4b97f5;
+    --hmp5: #2563eb;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji";
+    color: var(--text);
+    background: radial-gradient(1200px 1200px at 100% -20%, rgba(122,162,255,.08), transparent 60%) , var(--bg);
+  }
+
+  header {
+    position: sticky; top: 0; z-index: 10;
+    background: linear-gradient(180deg, rgba(15,17,21,0.9), rgba(15,17,21,0.7));
+    backdrop-filter: saturate(1.2) blur(8px);
+    border-bottom: 1px solid var(--border);
+  }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 12px 16px; }
+
+  .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .grow { flex: 1 1 auto; }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+  }
+
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .subtle { color: var(--muted); font-size: 12px; }
+
+  .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .btn, button, input[type="submit"] {
+    appearance: none;
+    border: 1px solid var(--border);
+    background: #111622;
+    color: var(--text);
+    padding: 10px 12px;
+    border-radius: 10px;
+    cursor: pointer;
+  }
+  .btn:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, .chip:focus-visible {
+    outline: none; box-shadow: var(--focus);
+  }
+  .btn.primary { background: var(--accent); border-color: transparent; color: white; }
+  .btn.success { background: var(--accent-2); border-color: transparent; color: white; }
+  .btn.warn { background: var(--warn); border-color: transparent; color: black; }
+  .btn.danger { background: var(--danger); border-color: transparent; color: white; }
+  .btn.ghost { background: transparent; }
+  .btn.small { padding: 6px 8px; border-radius: 8px; font-size: 12px; }
+  .btn.icon { padding: 8px; width: 36px; height: 36px; display: grid; place-items: center; }
+
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 6px 10px; border-radius: 999px; font-weight: 600; font-size: 12px;
+    background: #0e1626; border: 1px solid var(--border);
+  }
+  .rankA { background: rgba(34,197,94,.15); color: var(--rankA); border-color: rgba(34,197,94,.35); }
+  .rankB { background: rgba(132,204,22,.15); color: var(--rankB); border-color: rgba(132,204,22,.35); }
+  .rankC { background: rgba(245,158,11,.15); color: var(--rankC); border-color: rgba(245,158,11,.35); }
+  .rankD { background: rgba(249,115,22,.15); color: var(--rankD); border-color: rgba(249,115,22,.35); }
+  .rankF { background: rgba(239,68,68,.15); color: var(--rankF); border-color: rgba(239,68,68,.35); }
+
+  .toolbar { display: flex; gap: 8px; align-items: center; }
+  .chip {
+    padding: 6px 10px; border-radius: 999px; border: 1px solid var(--border); background: #0f1627; cursor: pointer;
+  }
+  .chip.active { background: var(--accent); color: #fff; border-color: transparent; }
+
+  .tabs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .tab-btn {
+    padding: 10px; text-align: center; border-radius: 10px; border: 1px solid var(--border); background: #0e1320; cursor: pointer;
+  }
+  .tab-btn[aria-selected="true"]{ background: var(--accent); color: #fff; border-color: transparent; }
+
+  main { padding: 16px; }
+  .grid {
+    display: grid; gap: 16px;
+  }
+  @media(min-width: 860px){
+    .grid { grid-template-columns: 2fr 1fr; align-items: start; }
+  }
+
+  /* Task list */
+  .task-list { display: grid; gap: 8px; }
+  .task {
+    display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center;
+    padding: 10px; border: 1px dashed var(--border); border-radius: var(--radius-sm); background: #0e1320;
+  }
+  .task.dragging { opacity: .5; outline: 2px dashed var(--accent); }
+  .task-title { font-weight: 600; }
+  .task-meta { font-size: 12px; color: var(--muted); }
+  .task-actions { display: flex; gap: 6px; }
+
+  /* Checklist */
+  .checklist { display: grid; gap: 8px; }
+  .check {
+    display: grid; grid-template-columns: 28px 1fr auto; gap: 10px; align-items: center;
+    padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: #0f1523;
+  }
+  .check.disabled { opacity: .5; }
+  .check label { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+
+  /* Heatmap */
+  .heatmap {
+    display: grid; grid-template-columns: repeat(13, 1fr); gap: 4px;
+    padding: 10px; background: #0d1422; border-radius: var(--radius); border: 1px solid var(--border);
+  }
+  .hm-cell {
+    width: 100%; aspect-ratio: 1 / 1; border-radius: 4px; background: var(--hmp0);
+    position: relative; outline: none; border: 1px solid rgba(255,255,255,.02);
+  }
+  .hm-0 { background: var(--hmp0); }
+  .hm-1 { background: var(--hmp1); }
+  .hm-2 { background: var(--hmp2); }
+  .hm-3 { background: var(--hmp3); }
+  .hm-4 { background: var(--hmp4); }
+  .hm-5 { background: var(--hmp5); }
+
+  .tooltip {
+    position: fixed; padding: 6px 8px; font-size: 12px; background: #0b1221; color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; pointer-events: none; transform: translate(-50%, -140%);
+    opacity: 0; transition: opacity .08s ease;
+    white-space: nowrap; z-index: 1000;
+  }
+
+  /* Analytics */
+  .metrics { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  @media(min-width: 720px){ .metrics { grid-template-columns: repeat(4, 1fr);} }
+  .metric {
+    background: #0d1422; border: 1px solid var(--border); border-radius: var(--radius); padding: 12px;
+  }
+  .metric .label { color: var(--muted); font-size: 12px; }
+  .metric .value { font-size: 22px; font-weight: 700; margin-top: 4px; }
+  .metric .mini { margin-top: 6px; font-size: 12px; color: var(--muted); }
+
+  /* Data controls area */
+  .data-ops { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+
+  /* Floating add button (mobile) */
+  .fab {
+    position: fixed; right: 16px; bottom: 16px; z-index: 20;
+    background: var(--accent); color: #fff; border-radius: 999px; width: 56px; height: 56px; display: grid; place-items: center;
+    border: none; box-shadow: var(--shadow);
+  }
+
+  /* Forms */
+  input[type="text"], input[type="date"], select, textarea {
+    background: #0c1220; border: 1px solid var(--border); color: var(--text); border-radius: 10px; padding: 10px;
+  }
+
+  /* Toasts */
+  .toasts { position: fixed; left: 50%; transform: translateX(-50%); bottom: 20px; display: grid; gap: 8px; z-index: 999; }
+  .toast {
+    background: #0c162a; border: 1px solid var(--border); color: var(--text); padding: 10px 12px; border-radius: 10px; box-shadow: var(--shadow);
+  }
+
+  /* Empty states */
+  .empty {
+    text-align: center; padding: 20px; color: var(--muted);
+  }
+
+  /* Header layout specifics */
+  .date-nav { display: flex; gap: 6px; align-items: center; }
+  .kpi { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+  /* Loading shimmer for charts */
+  .shimmer {
+    position: relative; overflow: hidden; background: #0f1627; border: 1px solid var(--border); border-radius: var(--radius); min-height: 220px;
+  }
+  .shimmer::after {
+    content: ""; position: absolute; inset: 0; transform: translateX(-100%);
+    background: linear-gradient( 90deg, transparent, rgba(255,255,255,.06), transparent );
+    animation: shimmer 1.3s infinite;
+  }
+  @keyframes shimmer {
+    100% { transform: translateX(100%); }
+  }
+
+  .pwa-hint {
+    font-size: 12px; color: var(--muted); margin-top: 4px;
+  }
+</style>
+</head>
+<body data-theme="dark">
+<header>
+  <div class="wrap" role="banner">
+    <div class="row" style="justify-content: space-between;">
+      <div>
+        <h1 aria-live="polite">Daily Goal Tracker</h1>
+        <div class="subtle">Track daily goals, visualize progress, and keep your streak alive ✨</div>
+      </div>
+      <div class="toolbar">
+        <button id="themeToggle" class="btn small" aria-pressed="false" title="Toggle light/dark (persists)">🌗 Theme</button>
+        <button id="undoBtn" class="btn small ghost" title="Undo last action (1 step)" aria-label="Undo last action">↶ Undo</button>
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:10px;">
+      <div class="date-nav" aria-label="Date navigation">
+        <button id="prevDay" class="btn icon" title="Previous day" aria-label="Previous day">◀</button>
+        <input id="datePicker" type="date" aria-label="Select date" />
+        <button id="nextDay" class="btn icon" title="Next day" aria-label="Next day">▶</button>
+        <button id="todayBtn" class="btn small" title="Jump to today (T)">Today</button>
+      </div>
+
+      <div class="kpi">
+        <span id="todayPct" class="badge" aria-live="polite">0% today</span>
+        <span id="todayRank" class="badge rankF" aria-live="polite">Rank F</span>
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:10px;">
+      <nav class="tabs" role="tablist" aria-label="Main sections">
+        <button class="tab-btn" role="tab" id="tab-daily" aria-selected="true" aria-controls="panel-daily">Daily</button>
+        <button class="tab-btn" role="tab" id="tab-tasks" aria-selected="false" aria-controls="panel-tasks">Tasks</button>
+        <button class="tab-btn" role="tab" id="tab-analytics" aria-selected="false" aria-controls="panel-analytics">Analytics</button>
+      </nav>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+  <!-- DAILY PANEL -->
+  <section id="panel-daily" role="tabpanel" aria-labelledby="tab-daily">
+    <div class="panel" style="padding:12px;">
+      <div class="row" style="justify-content: space-between;">
+        <div class="controls">
+          <button id="markAllDone" class="btn success" title="Mark all daily tasks done">✓ Mark all done</button>
+          <button id="clearDay" class="btn danger" title="Clear all checkmarks for selected day (C)">✕ Clear day</button>
+          <div class="chip-group" role="group" aria-label="Filter tasks by completion">
+            <button class="chip active" data-filter="all">All</button>
+            <button class="chip" data-filter="incomplete">Incomplete</button>
+            <button class="chip" data-filter="complete">Complete</button>
+          </div>
+        </div>
+        <div class="pwa-hint">Tip: Add this page to Home Screen for an offline-friendly shortcut.</div>
+      </div>
+
+      <div id="checklist" class="checklist" style="margin-top:12px;"></div>
+      <div id="daily-empty" class="empty" hidden>
+        No tasks yet. Add your first task in the Tasks tab (N to quickly add).
+      </div>
+    </div>
+  </section>
+
+  <!-- TASKS PANEL -->
+  <section id="panel-tasks" role="tabpanel" aria-labelledby="tab-tasks" hidden>
+    <div class="panel" style="padding:12px;">
+      <form id="taskForm" class="row" aria-label="Add or edit task">
+        <input type="hidden" id="taskId" />
+        <label class="grow">
+          <span class="subtle">Task title</span>
+          <input id="taskTitle" type="text" placeholder="e.g., Exercise, Read 30 mins" required aria-required="true" />
+        </label>
+        <label>
+          <span class="subtle">Type</span>
+          <select id="taskType" aria-label="Task type">
+            <option value="daily">Daily</option>
+            <option value="optional">Optional</option>
+          </select>
+        </label>
+        <button type="submit" class="btn primary" id="saveTaskBtn">Add Task</button>
+      </form>
+
+      <div class="row" style="margin-top:12px; justify-content: space-between;">
+        <div class="subtle">Drag to reorder, or use the ↑ ↓ buttons. “Daily” tasks count toward completion; “Optional” do not.</div>
+        <div class="data-ops">
+          <button id="exportBtn" class="btn">Export</button>
+          <label class="btn">
+            Import
+            <input id="importInput" type="file" accept="application/json" hidden />
+          </label>
+          <select id="importMode" title="Import mode">
+            <option value="merge">Merge</option>
+            <option value="replace">Replace</option>
+          </select>
+          <button id="resetBtn" class="btn danger">Reset all</button>
+        </div>
+      </div>
+
+      <div id="taskList" class="task-list" style="margin-top:12px;"></div>
+      <div id="tasks-empty" class="empty" hidden>
+        Your master task list is empty. Add tasks above to get started.
+      </div>
+    </div>
+    <button id="fabAdd" class="fab" aria-label="Quick add task">＋</button>
+  </section>
+
+  <!-- ANALYTICS PANEL -->
+  <section id="panel-analytics" role="tabpanel" aria-labelledby="tab-analytics" hidden>
+    <div class="grid">
+      <div class="panel" style="padding:12px;">
+        <h2 style="margin:0 0 10px;">Last 90 days — calendar heatmap</h2>
+        <div id="heatmap" class="heatmap" role="grid" aria-label="Completion heatmap (last 90 days)"></div>
+        <div class="subtle" style="margin-top:6px;">Darker = higher completion %. Hover/tap for details.</div>
+      </div>
+      <div class="panel" style="padding:12px;">
+        <h2 style="margin:0 0 10px;">Metrics & Ranking</h2>
+        <div class="metrics">
+          <div class="metric">
+            <div class="label">Today</div>
+            <div class="value" id="mToday">0%</div>
+            <div class="mini"><span id="rToday" class="badge rankF">Rank F</span></div>
+          </div>
+          <div class="metric">
+            <div class="label">Rolling 7-day avg</div>
+            <div class="value" id="mWeek">0%</div>
+            <div class="mini"><span id="rWeek" class="badge rankF">Rank F</span></div>
+          </div>
+          <div class="metric">
+            <div class="label">This month avg</div>
+            <div class="value" id="mMonth">0%</</div>
+            <div class="mini"><span id="rMonth" class="badge rankF">Rank F</span></div>
+          </div>
+          <div class="metric">
+            <div class="label">Streaks</div>
+            <div class="value" id="streaks">0 current • 0 longest</div>
+            <div class="mini">100% days counted in streaks</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" style="padding:12px; margin-top:16px;">
+      <h2 style="margin:0 0 10px;">Last 30 days — completion trend</h2>
+      <div id="chartWrap" class="shimmer" aria-busy="true" aria-live="polite">
+        <canvas id="trendChart" role="img" aria-label="30-day completion trend chart"></canvas>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- Live regions -->
+<div class="toasts" aria-live="polite" aria-atomic="true"></div>
+<div id="tooltip" class="tooltip" role="tooltip" aria-hidden="true"></div>
+
+<!-- Chart.js CDN -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+
+<script>
+/*** =========================
+ *  SIMPLE STATE & STORAGE
+ * ========================== */
+const STORAGE_KEY = 'dgt:v1';
+const PREF_KEY = 'dgt:prefs';
+
+const $ = (sel, root=document)=> root.querySelector(sel);
+const $$ = (sel, root=document)=> [...root.querySelectorAll(sel)];
+
+const todayISO = ()=> new Date().toISOString().slice(0,10);
+const toISO = d => new Date(d.getTime() - d.getTimezoneOffset()*60000).toISOString().slice(0,10);
+const fromISO = iso => {
+  const [y,m,d] = iso.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m-1, d, 12, 0, 0)); // noon to avoid TZ surprises
+  return new Date(dt.getFullYear(), dt.getMonth(), dt.getDate());
+};
+const clamp = (x, a, b)=> Math.min(b, Math.max(a, x));
+
+let state = null;         // { tasks:[], completions:{}, meta:{} }
+let prefs = null;         // { tab:'daily'|'tasks'|'analytics', selectedDate:'YYYY-MM-DD', theme:'dark'|'light' }
+let undoStack = [];       // single-step: keep the previous snapshot only
+
+function load() {
+  const raw = localStorage.getItem(STORAGE_KEY);
+  if (raw) {
+    try { state = JSON.parse(raw); }
+    catch { /* fallthrough to seed */ }
+  }
+  if (!state) seed();
+
+  const p = localStorage.getItem(PREF_KEY);
+  prefs = { tab:'daily', selectedDate: todayISO(), theme:'dark' };
+  if (p) { try { Object.assign(prefs, JSON.parse(p)); } catch{} }
+
+  document.body.dataset.theme = prefs.theme || 'dark';
+  $('#themeToggle').setAttribute('aria-pressed', prefs.theme==='light' ? 'true' : 'false');
+}
+
+function seed() {
+  // Seed a couple of tasks + 30 days of sample completion
+  const t1 = { id: uid(), title:'Exercise', daily:true, active:true, order:0 };
+  const t2 = { id: uid(), title:'Read 30 mins', daily:true, active:true, order:1 };
+  const t3 = { id: uid(), title:'Meditate', daily:false, active:true, order:2 };
+  const completions = {};
+  const now = new Date();
+  for (let i=0; i<35; i++){
+    const d = new Date(now); d.setDate(now.getDate()-i);
+    const iso = toISO(d);
+    const p = i%7; // varying pattern
+    completions[iso] = {
+      [t1.id]: p<=4,
+      [t2.id]: p<=3,
+      [t3.id]: p<=2,
+    };
+  }
+  state = {
+    tasks: [t1,t2,t3],
+    completions,
+    meta: { createdAt: new Date().toISOString(), version: 1 }
+  };
+  save();
+}
+
+function save() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+}
+
+function savePrefs() {
+  localStorage.setItem(PREF_KEY, JSON.stringify(prefs));
+}
+
+function snapshotForUndo() {
+  undoStack = [JSON.parse(JSON.stringify(state))];
+}
+
+function undo() {
+  if (!undoStack.length) return toast('Nothing to undo');
+  state = undoStack.pop();
+  save();
+  renderAll();
+  toast('Undone');
+}
+
+/*** =========================
+ *  HELPERS / CALCULATIONS
+ * ========================== */
+function uid(){ return 't' + Math.random().toString(36).slice(2,9); }
+
+function dailyTasks() {
+  return state.tasks.filter(t=>t.active && t.daily).sort((a,b)=>a.order-b.order);
+}
+function allTasks() {
+  return state.tasks.filter(t=>t.active).sort((a,b)=>a.order-b.order);
+}
+
+function getDayMap(iso) {
+  return state.completions[iso] || {};
+}
+
+function setCompletion(iso, taskId, done) {
+  if (!state.completions[iso]) state.completions[iso] = {};
+  state.completions[iso][taskId] = !!done;
+}
+
+function calcCompletion(iso) {
+  const tasks = dailyTasks();
+  const map = getDayMap(iso);
+  if (!tasks.length) return 0;
+  const done = tasks.filter(t => map[t.id]).length;
+  return Math.round((done / tasks.length) * 100);
+}
+
+function rankFromPct(p) {
+  if (p >= 90) return 'A';
+  if (p >= 75) return 'B';
+  if (p >= 50) return 'C';
+  if (p >= 25) return 'D';
+  return 'F';
+}
+
+function rankClass(r){
+  return ({A:'rankA',B:'rankB',C:'rankC',D:'rankD',F:'rankF'})[r] || 'rankF';
+}
+
+function getRolling(windowDays, refISO) {
+  const ref = fromISO(refISO);
+  let sum = 0, count = 0;
+  for (let i=0; i<windowDays; i++) {
+    const d = new Date(ref); d.setDate(ref.getDate()-i);
+    sum += calcCompletion(toISO(d)); count++;
+  }
+  return Math.round(sum / Math.max(1,count));
+}
+
+function getMonthAvg(refISO) {
+  const d = fromISO(refISO);
+  const y = d.getFullYear(), m = d.getMonth();
+  const start = new Date(y, m, 1);
+  const end = new Date(y, m+1, 0);
+  let sum=0, count=0;
+  for (let dt=new Date(start); dt<=end; dt.setDate(dt.getDate()+1)) {
+    sum += calcCompletion(toISO(dt)); count++;
+  }
+  return Math.round(sum / Math.max(1,count));
+}
+
+function getStreaks(refISO) {
+  // Current + longest streak of 100% days, walking back from refISO
+  let current = 0, longest = 0;
+  let running = 0;
+  for (let i=0; i<365; i++){
+    const d = fromISO(refISO); d.setDate(d.getDate()-i);
+    const pct = calcCompletion(toISO(d));
+    if (pct === 100) { running++; longest = Math.max(longest, running); }
+    else { if (i===0) current = 0; running = 0; }
+    if (i===0 && pct===100) current = 1;
+    if (i>0 && running>0 && current>0) current++;
+  }
+  return { current, longest };
+}
+
+function lastNDays(n, refISO) {
+  const arr = [];
+  for (let i=n-1; i>=0; i--) {
+    const d = fromISO(refISO); d.setDate(d.getDate()-i);
+    arr.push(toISO(d));
+  }
+  return arr;
+}
+
+/*** =========================
+ *  RENDER: HEADER KPI
+ * ========================== */
+function renderHeader() {
+  $('#datePicker').value = prefs.selectedDate;
+  const pct = calcCompletion(prefs.selectedDate);
+  const r = rankFromPct(pct);
+  const pctEl = $('#todayPct');
+  const rankEl = $('#todayRank');
+
+  pctEl.textContent = pct + '% today';
+  rankEl.textContent = 'Rank ' + r;
+  rankEl.className = 'badge ' + rankClass(r);
+}
+
+/*** =========================
+ *  RENDER: DAILY CHECKLIST
+ * ========================== */
+function renderDaily() {
+  const container = $('#checklist');
+  container.innerHTML = '';
+  const dayMap = getDayMap(prefs.selectedDate);
+  const filter = $('.chip.active')?.dataset.filter || 'all';
+
+  const tasks = allTasks();
+  const filtered = tasks.filter(t => {
+    const done = !!dayMap[t.id];
+    if (filter==='complete') return done;
+    if (filter==='incomplete') return !done;
+    return true;
+  });
+
+  if (!tasks.length) {
+    $('#daily-empty').hidden = false;
+    return;
+  } else $('#daily-empty').hidden = true;
+
+  for (const t of filtered) {
+    const done = !!dayMap[t.id];
+    const item = document.createElement('div');
+    item.className = 'check' + (t.daily? '' : ' disabled');
+    item.role = 'group';
+    item.innerHTML = `
+      <input id="chk-${t.id}" type="checkbox" ${done?'checked':''} ${t.active? '' : 'disabled'} aria-checked="${done?'true':'false'}" />
+      <label for="chk-${t.id}">
+        <div class="task-title">${escapeHtml(t.title)}</div>
+        <div class="task-meta">${t.daily? 'Daily' : 'Optional (ignored in %)'} • order ${t.order+1}</div>
+      </label>
+      <div>
+        ${t.daily? '' : '<span class="badge">Optional</span>'}
+      </div>
+    `;
+    $('input', item).addEventListener('change', (e)=>{
+      snapshotForUndo();
+      setCompletion(prefs.selectedDate, t.id, e.target.checked);
+      save();
+      renderHeader(); renderAnalyticsMini(); renderHeatmap(); renderChart();
+      toast(`${e.target.checked? 'Completed' : 'Unchecked'}: ${t.title}`);
+    });
+    container.appendChild(item);
+  }
+}
+
+/*** =========================
+ *  RENDER: TASKS (CRUD + Reorder)
+ * ========================== */
+function renderTasks() {
+  const list = $('#taskList');
+  list.innerHTML = '';
+  const tasks = state.tasks.slice().sort((a,b)=>a.order-b.order);
+  $('#tasks-empty').hidden = tasks.length>0;
+
+  tasks.forEach(t => {
+    const row = document.createElement('div');
+    row.className = 'task';
+    row.draggable = true;
+    row.dataset.id = t.id;
+    row.innerHTML = `
+      <div class="badge">${t.daily? 'Daily' : 'Optional'}</div>
+      <div>
+        <div class="task-title">${escapeHtml(t.title)}</div>
+        <div class="task-meta">Order ${t.order+1} • ${t.active? 'Active' : 'Inactive'}</div>
+      </div>
+      <div class="task-actions">
+        <button class="btn small" data-act="up" title="Move up" aria-label="Move up">↑</button>
+        <button class="btn small" data-act="down" title="Move down" aria-label="Move down">↓</button>
+        <button class="btn small" data-act="toggle" title="Toggle Daily/Optional">⟲ Type</button>
+        <button class="btn small" data-act="edit" title="Edit task">✎ Edit</button>
+        <button class="btn small danger" data-act="delete" title="Delete task">🗑 Delete</button>
+      </div>
+    `;
+    // Drag & drop
+    row.addEventListener('dragstart', e=>{
+      row.classList.add('dragging');
+      e.dataTransfer.setData('text/plain', t.id);
+    });
+    row.addEventListener('dragend', ()=> row.classList.remove('dragging'));
+    row.addEventListener('dragover', e=>{
+      e.preventDefault();
+      const dragging = $('.task.dragging');
+      if (!dragging || dragging===row) return;
+      const after = (e.clientY - row.getBoundingClientRect().top) > row.offsetHeight/2;
+      list.insertBefore(dragging, after ? row.nextSibling : row);
+    });
+    row.addEventListener('drop', e=>{
+      e.preventDefault();
+      reorderByDom(list);
+    });
+
+    list.appendChild(row);
+
+    // Button actions
+    $('.task-actions', row).addEventListener('click', e=>{
+      if (!(e.target instanceof HTMLElement)) return;
+      const act = e.target.dataset.act;
+      if (!act) return;
+      if (act==='up' || act==='down') {
+        snapshotForUndo();
+        moveTask(t.id, act==='up' ? -1 : +1);
+        save(); renderTasks();
+      } else if (act==='toggle') {
+        snapshotForUndo();
+        t.daily = !t.daily; // toggle Daily/Optional
+        save(); renderTasks(); renderDaily(); renderHeader(); renderHeatmap(); renderChart(); renderAnalyticsMini();
+        toast(`${t.title} → ${t.daily? 'Daily' : 'Optional'}`);
+      } else if (act==='edit') {
+        $('#taskId').value = t.id;
+        $('#taskTitle').value = t.title;
+        $('#taskType').value = t.daily? 'daily' : 'optional';
+        $('#saveTaskBtn').textContent = 'Update Task';
+        $('#taskTitle').focus();
+      } else if (act==='delete') {
+        confirmDeleteTask(t);
+      }
+    });
+  });
+}
+
+function reorderByDom(listEl) {
+  snapshotForUndo();
+  const nodes = $$('.task', listEl);
+  nodes.forEach((n, idx)=>{
+    const id = n.dataset.id;
+    const t = state.tasks.find(x=>x.id===id);
+    if (t) t.order = idx;
+  });
+  save(); renderTasks(); renderDaily(); renderHeader(); renderHeatmap(); renderChart();
+  toast('Order updated');
+}
+
+function moveTask(id, delta) {
+  const arr = state.tasks.slice().sort((a,b)=>a.order-b.order);
+  const idx = arr.findIndex(t=>t.id===id);
+  if (idx<0) return;
+  const newIdx = clamp(idx+delta, 0, arr.length-1);
+  const [item] = arr.splice(idx,1);
+  arr.splice(newIdx,0,item);
+  arr.forEach((t,i)=> t.order = i);
+  state.tasks = arr;
+}
+
+function confirmDeleteTask(t) {
+  const ok = confirm(`Delete "${t.title}"? This also removes its checkmarks. This cannot be undone (except 1-step Undo).`);
+  if (!ok) return;
+  snapshotForUndo();
+  // Remove task
+  state.tasks = state.tasks.filter(x=>x.id!==t.id);
+  // Remove from completions
+  for (const d in state.completions) { delete state.completions[d][t.id]; }
+  save(); renderTasks(); renderDaily(); renderHeader(); renderHeatmap(); renderChart(); renderAnalyticsMini();
+  toast('Task deleted');
+}
+
+/*** =========================
+ *  RENDER: ANALYTICS
+ * ========================== */
+let trendChart = null;
+
+function renderHeatmap() {
+  const el = $('#heatmap');
+  el.innerHTML = '';
+  // 90 days grid ~ 13 weeks x 7 rows displayed as 13 x 7 (we'll transpose for readability)
+  const days = lastNDays(90, prefs.selectedDate);
+  // We render in 13 columns, 7 rows (weeks x weekdays)
+  // Build columns of weeks
+  const weeks = [];
+  for (let i=0; i<days.length; i+=7) weeks.push(days.slice(i, i+7));
+  // If not multiple of 7, pad the first column
+  const flat = weeks.flat(); // for iteration
+  // We'll create 13*7 cells; if missing date, mark as empty style hm-0
+  const allDays = [];
+  // Ensure exactly 13*7 (91) cells; we use last 90, the first cell can be repeated or left as 0
+  const need = 91;
+  const daysPad = days.length<need ? Array(need-days.length).fill(null).concat(days) : days.slice(-need);
+  // Build grid by 7 rows, 13 cols = columns in CSS are 13; we append in column order
+  const byWeek = [];
+  for (let i=0;i<13;i++){
+    byWeek.push(daysPad.slice(i*7, i*7+7));
+  }
+  // Flatten column-wise to match grid-template-columns: repeat(13,1fr)
+  const colMajor = byWeek.flat();
+
+  colMajor.forEach(iso=>{
+    const cell = document.createElement('button');
+    cell.className = 'hm-cell hm-0';
+    cell.type = 'button';
+    cell.tabIndex = 0;
+    if (iso) {
+      const pct = calcCompletion(iso);
+      const tier = pct===0?0 : pct<20?1 : pct<40?2 : pct<60?3 : pct<90?4 : 5;
+      cell.classList.remove('hm-0');
+      cell.classList.add('hm-'+tier);
+      cell.setAttribute('aria-label', `${iso}: ${pct}% complete`);
+      cell.addEventListener('mouseenter', e=> showTooltip(e, `${iso}: ${pct}%`));
+      cell.addEventListener('mouseleave', hideTooltip);
+      cell.addEventListener('focus', e=> showTooltip(e, `${iso}: ${pct}%`));
+      cell.addEventListener('blur', hideTooltip);
+      cell.addEventListener('click', ()=>{
+        prefs.selectedDate = iso; savePrefs();
+        switchTab('daily'); // jump to daily for quick edits
+        renderAll();
+      });
+    } else {
+      cell.setAttribute('aria-hidden', 'true');
+      cell.disabled = true;
+    }
+    el.appendChild(cell);
+  });
+}
+
+function renderChart() {
+  const wrap = $('#chartWrap');
+  wrap.classList.add('shimmer'); wrap.setAttribute('aria-busy','true');
+
+  const labels = lastNDays(30, prefs.selectedDate);
+  const data = labels.map(d=> calcCompletion(d));
+
+  // small delay to show shimmer nicely
+  setTimeout(()=>{
+    if (trendChart) { trendChart.destroy(); }
+    const ctx = $('#trendChart').getContext('2d');
+    trendChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [{
+          label: '% complete',
+          data,
+          tension: 0.25,
+          fill: false
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          y: { min: 0, max: 100, ticks: { stepSize: 25 }, grid: { color: 'rgba(128,128,128,.15)'} },
+          x: { grid: { display: false } }
+        },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: ctx => ` ${ctx.raw}%`
+            }
+          }
+        }
+      }
+    });
+    wrap.classList.remove('shimmer'); wrap.removeAttribute('aria-busy');
+  }, 250);
+}
+
+function renderAnalyticsMini() {
+  const today = prefs.selectedDate;
+  const pctToday = calcCompletion(today);
+  const weekAvg = getRolling(7, today);
+  const monthAvg = getMonthAvg(today);
+  const { current, longest } = getStreaks(today);
+
+  $('#mToday').textContent = pctToday + '%';
+  $('#mWeek').textContent = weekAvg + '%';
+  $('#mMonth').textContent = monthAvg + '%';
+  $('#streaks').textContent = `${current} current • ${longest} longest`;
+
+  const rt = rankFromPct(pctToday), rw = rankFromPct(weekAvg), rm = rankFromPct(monthAvg);
+  const rToday = $('#rToday'), rWeek = $('#rWeek'), rMonth = $('#rMonth');
+  rToday.textContent = 'Rank ' + rt; rToday.className = 'badge ' + rankClass(rt);
+  rWeek.textContent = 'Rank ' + rw; rWeek.className = 'badge ' + rankClass(rw);
+  rMonth.textContent = 'Rank ' + rm; rMonth.className = 'badge ' + rankClass(rm);
+}
+
+/*** =========================
+ *  TABS / NAV / THEME
+ * ========================== */
+function switchTab(id) {
+  prefs.tab = id;
+  savePrefs();
+  const tabs = [
+    {btn:'#tab-daily', panel:'#panel-daily', id:'daily'},
+    {btn:'#tab-tasks', panel:'#panel-tasks', id:'tasks'},
+    {btn:'#tab-analytics', panel:'#panel-analytics', id:'analytics'},
+  ];
+  tabs.forEach(({btn,panel,id:tid})=>{
+    $(btn).setAttribute('aria-selected', tid===id ? 'true' : 'false');
+    $(panel).hidden = tid!==id;
+  });
+  // lazy renders
+  if (id==='analytics'){ renderHeatmap(); renderChart(); renderAnalyticsMini(); }
+  if (id==='daily'){ renderDaily(); }
+  if (id==='tasks'){ renderTasks(); }
+}
+
+/*** =========================
+ *  EVENTS
+ * ========================== */
+function bindEvents() {
+  // Date controls
+  $('#datePicker').addEventListener('change', e=>{
+    prefs.selectedDate = e.target.value || todayISO();
+    savePrefs();
+    renderHeader(); renderDaily(); renderAnalyticsMini(); renderHeatmap(); renderChart();
+  });
+
+  $('#prevDay').addEventListener('click', ()=>{
+    const d = fromISO(prefs.selectedDate); d.setDate(d.getDate()-1);
+    prefs.selectedDate = toISO(d); savePrefs();
+    renderAll();
+  });
+  $('#nextDay').addEventListener('click', ()=>{
+    const d = fromISO(prefs.selectedDate); d.setDate(d.getDate()+1);
+    prefs.selectedDate = toISO(d); savePrefs();
+    renderAll();
+  });
+  $('#todayBtn').addEventListener('click', ()=>{ prefs.selectedDate = todayISO(); savePrefs(); renderAll(); });
+
+  // Tab click
+  $('#tab-daily').addEventListener('click', ()=> switchTab('daily'));
+  $('#tab-tasks').addEventListener('click', ()=> switchTab('tasks'));
+  $('#tab-analytics').addEventListener('click', ()=> switchTab('analytics'));
+
+  // Filter chips
+  $$('.chip').forEach(ch => ch.addEventListener('click', ()=>{
+    $$('.chip').forEach(x=> x.classList.remove('active'));
+    ch.classList.add('active');
+    renderDaily();
+  }));
+
+  // Daily bulk actions
+  $('#markAllDone').addEventListener('click', ()=>{
+    const tasks = dailyTasks();
+    if (!tasks.length) return toast('No daily tasks to mark');
+    snapshotForUndo();
+    for (const t of tasks) setCompletion(prefs.selectedDate, t.id, true);
+    save(); renderDaily(); renderHeader(); renderAnalyticsMini(); renderHeatmap(); renderChart();
+    toast('All daily tasks marked done');
+  });
+
+  $('#clearDay').addEventListener('click', ()=>{
+    if (!confirm('Clear all checkmarks for this day?') || !confirm('Really clear? This cannot be undone (except 1-step Undo).')) return;
+    snapshotForUndo();
+    const map = getDayMap(prefs.selectedDate);
+    for (const k in map) map[k] = false;
+    save(); renderDaily(); renderHeader(); renderAnalyticsMini(); renderHeatmap(); renderChart();
+    toast('Day cleared');
+  });
+
+  // Task form
+  $('#taskForm').addEventListener('submit', e=>{
+    e.preventDefault();
+    const id = $('#taskId').value.trim();
+    const title = $('#taskTitle').value.trim();
+    const daily = $('#taskType').value==='daily';
+    if (!title) return;
+
+    snapshotForUndo();
+
+    if (id) {
+      const t = state.tasks.find(x=>x.id===id);
+      if (t) { t.title = title; t.daily = daily; }
+      $('#saveTaskBtn').textContent = 'Add Task';
+      toast('Task updated');
+    } else {
+      const order = state.tasks.length;
+      state.tasks.push({ id: ensureUniqueId(uid()), title, daily, active:true, order });
+      toast('Task added');
+    }
+    $('#taskForm').reset();
+    save(); renderTasks(); renderDaily(); renderHeader(); renderHeatmap(); renderChart(); renderAnalyticsMini();
+  });
+
+  // Quick add (FAB)
+  $('#fabAdd').addEventListener('click', ()=>{
+    switchTab('tasks');
+    $('#taskTitle').focus();
+  });
+
+  // Undo
+  $('#undoBtn').addEventListener('click', undo);
+
+  // Theme
+  $('#themeToggle').addEventListener('click', ()=>{
+    const isLight = document.body.dataset.theme==='light';
+    document.body.dataset.theme = isLight ? 'dark' : 'light';
+    prefs.theme = document.body.dataset.theme;
+    $('#themeToggle').setAttribute('aria-pressed', prefs.theme==='light' ? 'true' : 'false');
+    savePrefs();
+  });
+
+  // Export
+  $('#exportBtn').addEventListener('click', ()=>{
+    const blob = new Blob([JSON.stringify(state, null, 2)], {type:'application/json'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `daily-goals-${todayISO()}.json`;
+    a.click();
+    toast('Exported JSON');
+  });
+
+  // Import
+  $('#importInput').addEventListener('change', async (e)=>{
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const json = JSON.parse(text);
+      const mode = $('#importMode').value;
+      importData(json, mode);
+      e.target.value = '';
+    } catch (err) { alert('Invalid JSON file.'); }
+  });
+
+  // Reset
+  $('#resetBtn').addEventListener('click', ()=>{
+    if (!confirm('Reset ALL data? This will erase tasks and history.')) return;
+    if (!confirm('Are you absolutely sure?')) return;
+    snapshotForUndo();
+    seed(); // re-seed fresh instance
+    toast('All data reset (seeded)');
+    renderAll();
+  });
+
+  // Keyboard shortcuts
+  document.addEventListener('keydown', (e)=>{
+    if (e.target && ['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName)) return;
+    if (e.key==='n' || e.key==='N'){ switchTab('tasks'); $('#taskTitle').focus(); e.preventDefault(); }
+    if (e.key==='t' || e.key==='T'){ prefs.selectedDate = todayISO(); savePrefs(); renderAll(); e.preventDefault(); }
+    if (e.key==='c' || e.key==='C'){ $('#clearDay').click(); e.preventDefault(); }
+  });
+}
+
+/*** =========================
+ *  IMPORT VALIDATION
+ * ========================== */
+function importData(json, mode='merge') {
+  // Basic schema check
+  if (!json || typeof json!=='object') return alert('Invalid data');
+  if (!Array.isArray(json.tasks) || typeof json.completions!=='object') return alert('JSON missing required keys.');
+
+  snapshotForUndo();
+
+  if (mode==='replace') {
+    // Regenerate duplicate IDs if any
+    const ids = new Set();
+    json.tasks.forEach(t=>{
+      if (!t.id || ids.has(t.id)) t.id = ensureUniqueId(uid(), ids);
+      ids.add(t.id);
+    });
+    state = {
+      tasks: json.tasks.map(normalizeTask).sort((a,b)=>a.order-b.order).map((t,i)=> ({...t, order:i})),
+      completions: sanitizeCompletions(json.completions, new Set(json.tasks.map(t=>t.id))),
+      meta: { createdAt: state.meta?.createdAt || new Date().toISOString(), version: 1 }
+    };
+  } else {
+    // merge: add or update tasks, preserve order by appending new at end
+    const existingIds = new Set(state.tasks.map(t=>t.id));
+    const map = new Map(state.tasks.map(t=>[t.id,t]));
+    const ids = new Set(state.tasks.map(t=>t.id));
+
+    json.tasks.forEach(t=>{
+      const nt = normalizeTask(t);
+      if (!nt.id || ids.has(nt.id)) nt.id = ensureUniqueId(uid(), ids);
+      ids.add(nt.id);
+      if (existingIds.has(nt.id)) {
+        const cur = map.get(nt.id);
+        cur.title = nt.title; cur.daily = !!nt.daily; cur.active = nt.active!==false;
+      } else {
+        nt.order = ids.size - 1;
+        state.tasks.push(nt);
+      }
+    });
+    // merge completions
+    const validIds = new Set(state.tasks.map(t=>t.id));
+    const inc = sanitizeCompletions(json.completions, validIds);
+    for (const d in inc) {
+      state.completions[d] = Object.assign({}, state.completions[d]||{}, inc[d]);
+    }
+  }
+  save(); renderAll(); toast(`Import ${mode}d`);
+}
+
+function normalizeTask(t) {
+  return {
+    id: String(t.id || uid()),
+    title: String(t.title || 'Untitled'),
+    daily: !!t.daily,
+    active: t.active !== false,
+    order: Number.isFinite(t.order) ? t.order : 0
+  };
+}
+function sanitizeCompletions(comp, validIds) {
+  const out = {};
+  for (const d in comp) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) continue;
+    out[d] = {};
+    for (const id in comp[d]) {
+      if (validIds.has(id)) out[d][id] = !!comp[d][id];
+    }
+  }
+  return out;
+}
+
+function ensureUniqueId(id, existing=new Set(state.tasks.map(t=>t.id))) {
+  let x = id;
+  while (existing.has(x)) x = uid();
+  return x;
+}
+
+/*** =========================
+ *  UI UTILITIES
+ * ========================== */
+function escapeHtml(s){ return s.replace(/[&<>"']/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;' }[c])); }
+
+function showTooltip(ev, text) {
+  const tip = $('#tooltip');
+  tip.textContent = text;
+  tip.style.left = ev.clientX + 'px';
+  tip.style.top = ev.clientY + 'px';
+  tip.style.opacity = 1;
+  tip.setAttribute('aria-hidden','false');
+}
+function hideTooltip() {
+  const tip = $('#tooltip');
+  tip.style.opacity = 0;
+  tip.setAttribute('aria-hidden','true');
+}
+
+function toast(msg) {
+  const wrap = $('.toasts');
+  const el = document.createElement('div');
+  el.className = 'toast'; el.textContent = msg;
+  wrap.appendChild(el);
+  setTimeout(()=> { el.style.opacity = '0'; el.style.transform = 'translateY(-6px)'; }, 2200);
+  setTimeout(()=> el.remove(), 2700);
+}
+
+/*** =========================
+ *  RENDER ALL
+ * ========================== */
+function renderAll() {
+  // guard selected date within reasonable range (ISO valid)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(prefs.selectedDate)) prefs.selectedDate = todayISO();
+  renderHeader();
+  renderDaily();
+  renderTasks();
+  if (prefs.tab==='analytics'){ renderHeatmap(); renderChart(); }
+  renderAnalyticsMini();
+  switchTab(prefs.tab); // ensure proper visibility states
+}
+
+/*** =========================
+ *  INIT
+ * ========================== */
+load();
+bindEvents();
+renderAll();
+
+/*** Prefill today's date input default if empty ***/
+if (!$('#datePicker').value) { $('#datePicker').value = prefs.selectedDate; }
+
+/*** =========================
+ *  ACCESSIBILITY extras
+ * ========================== */
+document.addEventListener('focusin', hideTooltip);
+</script>
+</body>
+</html>
